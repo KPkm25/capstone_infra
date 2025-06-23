@@ -1,0 +1,163 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- trial
+
+pool:
+  name: capstone_pool
+
+steps:
+
+# === Step 1: Destroy old Helm and Traffic Manager (optional refresh) ===
+- task: AzureCLI@2
+  displayName: "Terraform Destroy - Helm & Traffic Manager Only"
+  inputs:
+    azureSubscription: 'parakram-subs'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      TF_WORKING_DIR=$(System.DefaultWorkingDirectory)/terraform
+      cd "$TF_WORKING_DIR"
+      terraform init
+      # terraform destroy -refresh=true -auto-approve \
+      #   -target=helm_release.nginx_ingress \
+      #   -target=azurerm_traffic_manager_profile.main \
+      #   -target=azurerm_traffic_manager_endpoint.k8s
+    addSpnToEnvironment: true
+
+
+- task: AzureCLI@2
+  displayName: "Terraform Apply - AKS & Public IP Only"
+  inputs:
+    azureSubscription: 'parakram-subs'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      TF_WORKING_DIR=$(System.DefaultWorkingDirectory)/terraform
+      cd "$TF_WORKING_DIR"
+      terraform apply --auto-approve \
+        -target=azurerm_public_ip.nginx_ingress_ip \
+        -target=azurerm_kubernetes_cluster.aks_cluster
+    addSpnToEnvironment: true
+
+- task: AzureCLI@2
+  displayName: "Terraform Apply - Phase 1 (Infra: KV, SQL, ACR)"
+  inputs:
+    azureSubscription: 'parakram-subs'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      TF_WORKING_DIR=$(System.DefaultWorkingDirectory)/terraform
+      cd "$TF_WORKING_DIR"
+      terraform apply --auto-approve \
+        -target=azurerm_virtual_network.main \
+        -target=azurerm_subnet.aks1 \
+        -target=azurerm_key_vault.main \
+        -target=azurerm_mssql_server.main \
+        -target=azurerm_mssql_database.main \
+        -target=azurerm_private_endpoint.sql_pe \
+        -target=azurerm_container_registry.acr
+    addSpnToEnvironment: true
+
+
+- task: AzureCLI@2
+  displayName: "Install Helm"
+  inputs:
+    azureSubscription: 'parakram-subs'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+- task: AzureCLI@2
+  displayName: "Install NGINX Ingress via Helm"
+  inputs:
+    azureSubscription: 'parakram-subs'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      cd $(System.DefaultWorkingDirectory)/terraform
+      INGRESS_IP=$(terraform output -raw nginx_ingress_ip)
+
+      az aks get-credentials --resource-group parakram-capstone --name kpkm-aks-cluster --admin --overwrite-existing
+
+      # ✅ Add the missing repo
+      helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      helm repo update
+
+      helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx \
+        --namespace ingress-nginx --create-namespace \
+        --set controller.service.externalTrafficPolicy=Local \
+        --set controller.service.loadBalancerIP=$INGRESS_IP \
+        --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-resource-group"="MC_parakram-capstone_kpkm-aks-cluster_centralindia"
+    addSpnToEnvironment: true
+
+
+- task: AzureCLI@2
+  displayName: "Terraform Apply - Phase 2 (Traffic Manager Endpoint)"
+  inputs:
+    azureSubscription: 'parakram-subs'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      cd $(System.DefaultWorkingDirectory)/terraform
+      terraform apply --auto-approve \
+        -var="ingress_lb_ip=$(terraform output -raw nginx_ingress_ip)"
+    addSpnToEnvironment: true
+
+# - task: AzureCLI@2
+#   inputs:
+#     azureSubscription: 'parakram-subs'
+#     scriptType: 'bash'
+#     scriptLocation: 'inlineScript'
+#     inlineScript: |
+#       echo "Installing terraform"
+#       wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+#       echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+#       sudo apt update && sudo apt install terraform
+  
+# - task: AzureCLI@2
+#   inputs:
+#     azureSubscription: 'parakram-subs'
+#     scriptType: 'bash'
+#     scriptLocation: 'inlineScript'
+#     inlineScript: |
+#       terraform init
+#       terraform destroy -auto-approve
+#     workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+#     addSpnToEnvironment: true
+
+# - task: AzureCLI@2
+#   inputs:
+#     azureSubscription: 'parakram-subs'
+#     scriptType: 'bash'
+#     scriptLocation: 'inlineScript'
+#     inlineScript: |
+#       cd $(System.DefaultWorkingDirectory)/terraform
+#       terraform init
+#       terraform import azurerm_key_vault_secret.sql_admin_password https://kpkm-keyvault-v2.vault.azure.net/secrets/sql-admin-password
+# - task: AzureCLI@2
+#   displayName: "Terraform Apply: Phase 1 (infra only)"
+#   inputs:
+#     azureSubscription: 'parakram-subs'
+#     scriptType: 'bash'
+#     scriptLocation: 'inlineScript'
+#     inlineScript: |
+#       cd $(System.DefaultWorkingDirectory)/terraform
+#       terraform init
+#       terraform apply --auto-approve -target=azurerm_kubernetes_cluster.aks_cluster
+
+# - task: AzureCLI@2
+#   inputs:
+#     azureSubscription: 'parakram-subs'
+#     scriptType: 'bash'
+#     scriptLocation: 'inlineScript'
+#     inlineScript: |
+#       echo "Running Terraform..."
+#       cd $(System.DefaultWorkingDirectory)/terraform 
+#       terraform init
+#       terraform apply --auto-approve
+    

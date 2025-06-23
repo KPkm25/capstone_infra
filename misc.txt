@@ -1,0 +1,99 @@
+how to inject the secrets into the springboot code during runtime=>
+
+- task: AzureWebApp@1
+  inputs:
+    appName: 'springboot-app'
+    appSettings: |
+      SQL_ADMIN_USERNAME=$(az keyvault secret show --vault-name kv-springboot-sql --name sql-admin-username --query value -o tsv)
+      SQL_ADMIN_PASSWORD=$(az keyvault secret show --vault-name kv-springboot-sql --name sql-admin-password --query value -o tsv)
+then, in the application.properties:
+
+spring.datasource.username=${SQL_ADMIN_USERNAME}
+spring.datasource.password=${SQL_ADMIN_PASSWORD}
+
+--------------
+
+control-flow
+[Internet]
+    ↓
+[Azure Load Balancer]  ← created by Kubernetes Service of type LoadBalancer
+    ↓
+[Service: ingress-nginx-controller]  ← points to pods
+    ↓
+[Pod: NGINX Ingress Controller] ← interprets Ingress routing rules
+    ↓
+[Service: your-app-service]
+    ↓
+[Pods: your-app-pods]
+
+----------
+User
+  |
+  ↓ (DNS)
+Azure Traffic Manager
+  |
+  ↓ (resolves to NGINX public IP)
+NGINX Ingress Controller (exposed via AKS LoadBalancer service)
+  |
+  ↓ (Path-based Routing)
+Kubernetes Services
+  |
+  ↓
+Pods (Frontend, Backend, etc.)
+
+----------------
+** check how to create ingress using terraform and helm
+
+
+------
+Create and configre a remote backend for the tfstate file:
+# Variables
+RESOURCE_GROUP="parakram-capstone"
+STORAGE_ACCOUNT_NAME="kpkmterraform$(date +%s)"   # must be globally unique
+CONTAINER_NAME="tfstate"
+LOCATION="centralindia"
+
+# Create Storage Account
+az storage account create \
+  --name $STORAGE_ACCOUNT_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --location $LOCATION \
+  --sku Standard_LRS \
+  --encryption-services blob
+
+# Get Storage Account Key
+ACCOUNT_KEY=$(az storage account keys list \
+  --resource-group $RESOURCE_GROUP \
+  --account-name $STORAGE_ACCOUNT_NAME \
+  --query '[0].value' -o tsv)
+
+# Create Blob Container
+az storage container create \
+  --name $CONTAINER_NAME \
+  --account-name $STORAGE_ACCOUNT_NAME \
+  --account-key $ACCOUNT_KEY
+
+
+-----------
+
+modify and annotate the new static IP
+az network public-ip show \
+  --name fa2e2d40-596e-4123-9586-b8b1ace29aa0 \
+  --resource-group MC_parakram-capstone_kpkm-aks-cluster_centralindia \
+  --query id --output tsv
+
+kubectl annotate service nginx-ingress-ingress-nginx-controller \
+  -n ingress-nginx \
+  service.beta.kubernetes.io/azure-load-balancer-resource-group=MC_parakram-capstone_kpkm-aks-cluster_centralindia \
+  --overwrite
+  
+kubectl patch svc nginx-ingress-ingress-nginx-controller \
+  -n ingress-nginx \
+  -p '{"spec": {"loadBalancerIP": "20.235.216.151"}}'
+----------
+ingress checks
+
+kubectl describe ingress -A
+kubectl get svc -n ingress-nginx
+kubectl describe svc nginx-ingress-ingress-nginx-controller -n ingress-nginx
+kubectl get ingress capstone-frontend-ingress -o
