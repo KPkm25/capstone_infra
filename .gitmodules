@@ -4,3 +4,6 @@
 [submodule "backend"]
 	path = backend
 	url = https://github.com/KPkm25/capstone-backend.git
+[submodule "capstone_bicep_backup"]
+	path = capstone_bicep_backup
+	url = https://github.com/KPkm25/capstone_bicep_backup.git
